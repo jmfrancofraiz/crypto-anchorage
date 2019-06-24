@@ -81,7 +81,7 @@ app.post('/anchor', bodyParser.json(), async function(req,res) {
         } else {
           log('Esperando por el recibo...'.yellow);
           secs++;
-          if (secs > 1 ) {
+          if (secs > 30 ) {
             clearInterval(interval);      
             res.status(206).send({
               transactionHash: txHash
