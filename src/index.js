@@ -1,114 +1,73 @@
-const Web3 = require('web3');
-const axios = require('axios');
-const log = require('ololog').configure({ time: true });
-const ansi = require('ansicolor').nice;
 const express = require('express');
-const bodyParser = require('body-parser');
+const { ethers } = require('ethers');
+const compression = require('compression');
 
 const app = express();
+app.disable('x-powered-by');
+app.use(compression());
+app.use(express.json({ limit: '2kb' }));
 
-/**
- * Fetch the current transaction gas prices from https://ethgasstation.info/
- * 
- * @return {object} Gas prices at different priorities
- */
-const getCurrentGasPrices = async () => {
-    let response = await axios.get('https://ethgasstation.info/json/ethgasAPI.json');
-    let prices = {
-      low: response.data.safeLow / 10 + '',
-      medium: response.data.average / 10 + '',
-      high: response.data.fast / 10 + '',
-      highest: response.data.fastest / 10 + ''
+app.post('/anchor', async function (req, res) {
+  try {
+    const signature = req.body && req.body.signature;
+    if (!signature) {
+      res.status(400).send('Se espera un JSON con un atributo "signature" que contenga el dato a anclar en la blockchain');
+      return;
     }
-   
-    log(`Current ETH Gas Prices (in GWEI):`.cyan);
-    log(`Low: ${prices.low} (transaction completes in < 30 minutes)`.green);
-    log(`Standard: ${prices.medium} (transaction completes in < 5 minutes)`.yellow);
-    log(`Fast: ${prices.high} (transaction completes in < 2 minutes)`.red);
-   
-    return prices;
-}
 
-app.post('/anchor', bodyParser.json(), async function(req,res) {
+    const fromAccount = process.env.WALLET_ADDRESS;
+    const toAccount = process.env.DESTINATION_WALLET_ADDRESS;
+    const infuraToken = process.env.INFURA_ACCESS_TOKEN;
+    const privateKey = process.env.WALLET_PRIVATE_KEY;
 
-  const signature = req.body.signature;
-  if (!signature) {
-    res.status(400).send('Se espera un JSON con un atributo "signature" que contenga el dato a anclar en la blockchain');
-    return;
+    if (!fromAccount || !toAccount || !infuraToken || !privateKey) {
+      res.status(500).send('Faltan variables de entorno requeridas (WALLET_ADDRESS, DESTINATION_WALLET_ADDRESS, INFURA_ACCESS_TOKEN, WALLET_PRIVATE_KEY)');
+      return;
+    }
+
+    const provider = new ethers.providers.JsonRpcProvider(`https://ropsten.infura.io/v3/${infuraToken}`);
+    const wallet = new ethers.Wallet(privateKey, provider);
+
+    const balanceWei = await provider.getBalance(wallet.address);
+    const balanceEth = ethers.utils.formatEther(balanceWei);
+    console.log(`Saldo actual del wallet ${wallet.address}: ${balanceEth} ETH`);
+
+    const nonce = await provider.getTransactionCount(wallet.address, 'pending');
+    console.log(`Nonce del wallet: ${nonce}`);
+
+    const dataHex = ethers.utils.hexlify(ethers.utils.toUtf8Bytes(signature));
+
+    // Estimar gas para la transacción
+    const gasEstimate = await provider.estimateGas({ from: wallet.address, to: toAccount, data: dataHex });
+
+    const txRequest = {
+      nonce,
+      to: toAccount,
+      value: 0,
+      data: dataHex,
+      gasLimit: gasEstimate,
+    };
+
+    const sentTx = await wallet.sendTransaction(txRequest);
+    console.log(`Enviada transacción: ${sentTx.hash}`);
+
+    // Espera hasta 30s por el recibo; si no llega, devolvemos el hash para que el cliente consulte más tarde
+    const receiptOrNull = await Promise.race([
+      sentTx.wait(1),
+      new Promise((resolve) => setTimeout(() => resolve(null), 30_000)),
+    ]);
+
+    if (receiptOrNull) {
+      console.log(`Recibo: ${JSON.stringify(receiptOrNull)}`);
+      res.status(201).json(receiptOrNull);
+    } else {
+      console.log('Timeout esperando recibo; devolviendo el hash para consulta posterior');
+      res.status(206).json({ transactionHash: sentTx.hash });
+    }
+  } catch (error) {
+    console.error('Error en /anchor:', error);
+    res.status(500).send('Error procesando la solicitud');
   }
-
-  log(`Vamos a anclar la siguiente firma: `.yellow + signature.red);
-
-  const fromAccount = process.env.WALLET_ADDRESS;
-  const toAccount   =  process.env.DESTINATION_WALLET_ADDRESS;
-  const web3 = new Web3(new Web3.providers.HttpProvider(`https://ropsten.infura.io/v3/${process.env.INFURA_ACCESS_TOKEN}`));
-  web3.eth.defaultAccount = fromAccount;
-
-  let myBalanceWei = await web3.eth.getBalance(web3.eth.defaultAccount);
-  let myBalance = web3.utils.fromWei(myBalanceWei, 'ether');
-  log(`El saldo actual del wallet es ${myBalance} ETH`.green);
-
-  let nonce = await web3.eth.getTransactionCount(web3.eth.defaultAccount,'pending');
-  log(`El recuento de transacciones de este waller es: ${nonce}`.magenta);
-
-  //let gasPrices = await getCurrentGasPrices();
-
-  const tx = {
-    nonce: nonce,
-    //gasPrice: web3.utils.toWei(gasPrices.highest, 'gwei'),
-    gasLimit: web3.utils.toHex(21000),
-    gas: 2100000,
-    to: toAccount,
-    value: '0',
-    //chainId: 3, //ropsten
-    data: web3.utils.toHex(signature)
-  }
-  
-  const privateKey = '0755BDE7E22A6E0E7B0B55205477A246C0EA58F5764EF04404A45396F14EE818'
-  const signed = await web3.eth.accounts.signTransaction(tx, privateKey)
-  const rawTx = signed.rawTransaction
-
-  web3.eth
-    .sendSignedTransaction(rawTx)
-    .on('transactionHash', (txHash) => {
-      var secs = 0;
-      var interval = setInterval(async () => {
-        receipt = await web3.eth.getTransactionReceipt(txHash);
-        if (receipt) {
-          clearInterval(interval);      
-          log(`Recibo = `.yellow + JSON.stringify(receipt).green);
-          res.status(201).send(receipt);
-        } else {
-          log('Esperando por el recibo...'.yellow);
-          secs++;
-          if (secs > 30 ) {
-            clearInterval(interval);      
-            res.status(206).send({
-              transactionHash: txHash
-            });
-          } 
-        }
-      }, 1000);
-    })
-    .on('receipt', (receipt) => {
-      log(`Your receipt = ${receipt}`.green);
-    });
-
-  /*
-  const sendRawTx = (rawTx) =>
-    new Promise((resolve, reject) =>
-      web3.eth
-        .sendSignedTransaction(rawTx)
-        .on('transactionHash', resolve)
-        .on('error', reject)
-    )
-  
-  sendRawTx(rawTx).then(hash => console.log({hash}))
-  
-  res.send('OK');
-  */
-
 });
-
 
 app.listen(3000, () => console.log('Anchor service listening on port 3000!'));

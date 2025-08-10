@@ -13,7 +13,7 @@ Para arrancar el servicio:
 
 - En modo **PRODUCCIÓN**: 
 
-        sudo docker-compose -f docker-compose.prod-yml up
+        sudo docker-compose -f docker-compose.prod.yml up
 
 # Uso
 

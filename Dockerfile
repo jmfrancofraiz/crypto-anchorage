@@ -1,24 +1,18 @@
-# Primer stage, con el node_modules
-FROM node:10-alpine as builder
+FROM node:18-alpine
 
-# Por defecto construimos para producción, pero si queremos construir
-# para desarollo le pasamos "development" como variable de entorno
 ARG NODE_ENV=production
-ENV NODE_ENV=${NODE_ENV}
-
-RUN apk --no-cache add python make g++
-
-# Primero hacemos el copy del package.json y el npm ci para que docker genere
-# una capa con ese paso.
-COPY package*.json ./
-RUN npm ci
-
-# Segundo stage, solo con la app
-FROM node:10-alpine
-
+ENV NODE_ENV=$NODE_ENV
 WORKDIR /usr/src/app
-COPY --from=builder node_modules node_modules
+
+COPY package*.json ./
+RUN if [ "$NODE_ENV" = "production" ]; then \
+      npm ci --omit=dev --ignore-scripts; \
+    else \
+      npm ci --ignore-scripts; \
+    fi
 
 COPY . .
 
-CMD [ "npm", "run", "start:prod" ]
+EXPOSE 3000
+USER node
+CMD ["npm", "run", "start:prod"]

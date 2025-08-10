@@ -3,10 +3,10 @@ version: '3'
 services:
   anchor-service:
     build: .
-    volumes:
-      - .:/usr/src/app
-      - /usr/src/app/node_modules
+    environment:
+      - NODE_ENV=production
     ports:
       - 3000:3000
     env_file:
-     - ./environment.prod
+      - ./environment.prod
+    command: npm run start:prod
